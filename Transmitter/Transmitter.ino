@@ -4,9 +4,10 @@
 // Library inclution.
 //************************************************************************************
 #include <Arduino.h>
-#include "ChaCha.h"
 #include "RH_ASK.h"
+#include "AES.h"
 #include <avr/sleep.h>
+#include <avr/power.h>
 //************************************************************************************
 // Message types and syntax.
 //************************************************************************************
@@ -38,7 +39,7 @@
 //************************************************************************************
 #define buttonScanDelay 100 // Milliseconds before cheking each button for press (Allows multi button press detect)
 #define buttonHoldDelay 2000 // Milliseconds to hold button to continuously perform action.
-#define messageLength 10 // Length of message.
+#define messageLength 16 // Length of message. (Has to be 16 for AES)
 #define numUint64ToByte 8 // Number of bytes per uint64_t value.
 #define volUpPin 3 // On position 0 of array, with value 1.
 #define volDownPin 4 // On position 1 of array, with value 2.
@@ -53,30 +54,14 @@ volatile bool handleInterrupt = false;
 //************************************************************************************
 // Enctyption defintions.
 //************************************************************************************
-ChaCha chacha;
-struct encryption {
-    byte key[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-    uint8_t rounds = 8;
-    byte iv[8] = {101,102,103,104,105,106,107,108};
-    byte counter[8] = {109, 110, 111, 112, 113, 114, 115, 116};
-} const static cipher;
-
-
-//byte key[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-//                0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}; // 16 byte key
-//AESTiny128 aes;
-
-//************************************************************************************
-// Process time analyser - Debug.
-//************************************************************************************
-//#define enableAnalyser true // Debug.
-//#define analysePin 13 // Debug.
-
+byte key[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}; // 16 byte key
+AES128 aes;
 //************************************************************************************
 // Radio defintions.
 //************************************************************************************
-#define transmitPin 13
-RH_ASK driver(2000, 10, transmitPin, 11); // Speed, recieve pin, transmit pin, push to talk pin.
+#define transmitPin 12 // Radio transmit pin.
+RH_ASK driver(2000, 11, transmitPin, 13); // Speed, recieve pin, transmit pin, push to talk pin.
 //************************************************************************************
 // Functions.
 //************************************************************************************
@@ -106,13 +91,13 @@ void waitForRelease() {
                 pressed = true;
             }
         }
-        delay(20);
+        //delay(20);
     } while (pressed);
 }
 // Button push interrupt handler, check each button pin for connection to GND.
 void buttonInterrupt() {
-    detachInterrupt(digitalPinToInterrupt(interruptPin)); // Deattatch interrupt to pin.
     sleep_disable(); // Disable sleep mode.
+    detachInterrupt(digitalPinToInterrupt(interruptPin)); // Deattatch interrupt to pin.
     handleInterrupt = true;
 }
 // Scan buttons for press.
@@ -174,58 +159,51 @@ void continuousPess(uint16_t action, uint8_t pin) {
 }
 // Transmit action and time information converted to a char array.
 void transmitMessage(uint16_t action) {
-    uint8_t message[messageLength]; // Plaintext message array.
-    //char ciphertext[messageLength]; // Encrypted message array.
-    message[1] = (uint8_t) action; // Cast low byte of action to second position of message.
-    message[0] = (uint8_t) (action >> 8); // Cast high byte of action to first position of message.
+    byte message[messageLength]; // Plaintext message array.
+    message[1] = (byte) action; // Cast low byte of action to second position of message.
+    message[0] = (byte) (action >> 8); // Cast high byte of action to first position of message.
     uint64_t time = millis(); // get current time.
     for (uint8_t i = 0; i < numUint64ToByte; i++) { // Bit shift uint64_t value as chars in message.
-        message[1 + numUint64ToByte - i] = (uint8_t) (time >> (8 * i)); 
+        message[1 + numUint64ToByte - i] = (byte) (time >> (8 * i)); 
     }
-    chacha.encrypt(message, message, messageLength); // Encrypt message.
-    chacha.setCounter(cipher.counter, sizeof(cipher.counter)); // Set counter.
-    //aes.encryptBlock(ciphertext, plaintext);
-    //driver.send((uint8_t)ciphertext[0], messageLength); // Send message.
+    for (uint8_t i = (numUint64ToByte + 2); i <= messageLength; i++) {
+        message[i] = (byte) 0; // Unused part of message buffer.
+    }
+    aes.encryptBlock(&message[0], &message[0]); // Encrypt message.
     driver.send(&message[0], messageLength); // Send message.
     driver.waitPacketSent(); // Wait until message is sendt.
 }
-// Process time analyser - Debug.
-//void processTimer(uint8_t state) { // Debug.
-//    if (state == 0) { // Done processing - Debug.
-//        digitalWrite(analysePin, LOW); // Debug.
-//    } else if (state == 1) { // Debug.
-//        digitalWrite(analysePin, HIGH); // Start processing - Debug.
-//    } // Debug.
-//} // Debug.
+// Put the Arduino to sleep.
+void enableDeepSleep() {
+    sleep_enable(); // Enable sleep mode. Must be valled before setting interrupt!
+    setInterruptMode(); // Set pins back to interrupt mode.
+    attachInterrupt(digitalPinToInterrupt(interruptPin), buttonInterrupt, LOW); // Attatch interrupt to pin.
+    // In all but IDLE mode, only LOW interrupt mode can be used!
+    set_sleep_mode(SLEEP_MODE_PWR_DOWN); // Set the mode of sleep.
+    cli(); // Clear global interrupt mask.
+    sleep_bod_disable(); // Disable brown-out detection.
+    sei(); // Set global interrupt mask.
+    sleep_cpu(); // Put Arduino to sleep.
+    sleep_disable(); // Make sure sleep is disabled!
+}
 // Setup.
 //************************************************************************************
 void setup() {
-    //pinMode(analysePin, OUTPUT); // Debug.
+    power_adc_disable(); // Disable ADC to save power.
+    power_spi_disable(); // Dsiable SPI to save power.
     driver.init(); // Start radio driver.
-    //driver.setModeIdle(); // Set the transmitter to idle mode.
-    //aes.setKey(key, aes.keySize()); // Set encryption key.
-    chacha.setNumRounds(cipher.rounds); // Set number of rounds.
-    chacha.setKey(cipher.key, sizeof(cipher.key)); // Set key.
-    chacha.setIV(cipher.iv, sizeof(cipher.iv)); // Set initialization vector.
-    chacha.setCounter(cipher.counter, sizeof(cipher.counter)); // Set number of rounds.
+    aes.setKey(&key[0], sizeof(key)); // Set encryption key.
 }
 // Main loop.
 //************************************************************************************
 void loop() {
-    if (handleInterrupt) {
+    if (handleInterrupt) { // Handle button press.
         handleInterrupt = false;
-        scanButtons();
-        //driver.setModeTx(); // Set transmitter to transmit mode.
-        buttonAction();
-        //driver.setModeIdle(); // Set the transmitter to idle mode.
-        //processTimer(0); // Debug.
-        waitForRelease();
+        scanButtons(); // Test each button for press.
+        buttonAction(); // Process button press(es).
+        waitForRelease(); // Make sure all buttons are released.
     }
-    setInterruptMode(); // Set pins back to interrupt mode.
-    attachInterrupt(digitalPinToInterrupt(interruptPin), buttonInterrupt, FALLING); // Attatch interrupt to pin.
-    sleep_enable(); // Enable sleep mode.
-    set_sleep_mode(SLEEP_MODE_PWR_DOWN); // Set the mode of sleep.
-    sleep_cpu(); // Put Arduino to sleep.
+    enableDeepSleep(); // Sleep Arduino.
 }
 // End
 //************************************************************************************

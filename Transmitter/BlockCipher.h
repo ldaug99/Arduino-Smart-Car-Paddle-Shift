@@ -20,45 +20,27 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef CRYPTO_CHACHA_h
-#define CRYPTO_CHACHA_h
+#ifndef CRYPTO_BLOCKCIPHER_h
+#define CRYPTO_BLOCKCIPHER_h
 
-#include "Cipher.h"
+#include <inttypes.h>
+#include <stddef.h>
 
-class ChaChaPoly;
-
-class ChaCha : public Cipher
+class BlockCipher
 {
 public:
-    explicit ChaCha(uint8_t numRounds = 20);
-    virtual ~ChaCha();
+    BlockCipher();
+    virtual ~BlockCipher();
 
-    size_t keySize() const;
-    size_t ivSize() const;
+    virtual size_t blockSize() const = 0;
+    virtual size_t keySize() const = 0;
 
-    uint8_t numRounds() const { return rounds; }
-    void setNumRounds(uint8_t numRounds) { rounds = numRounds; }
+    virtual bool setKey(const uint8_t *key, size_t len) = 0;
 
-    bool setKey(const uint8_t *key, size_t len);
-    bool setIV(const uint8_t *iv, size_t len);
-    bool setCounter(const uint8_t *counter, size_t len);
+    virtual void encryptBlock(uint8_t *output, const uint8_t *input) = 0;
+    virtual void decryptBlock(uint8_t *output, const uint8_t *input) = 0;
 
-    void encrypt(uint8_t *output, const uint8_t *input, size_t len);
-    void decrypt(uint8_t *output, const uint8_t *input, size_t len);
-
-    void clear();
-
-    static void hashCore(uint32_t *output, const uint32_t *input, uint8_t rounds);
-
-private:
-    uint8_t block[64];
-    uint8_t stream[64];
-    uint8_t rounds;
-    uint8_t posn;
-
-    void keystreamBlock(uint32_t *output);
-
-    friend class ChaChaPoly;
+    virtual void clear() = 0;
 };
 
 #endif

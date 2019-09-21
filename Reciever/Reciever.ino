@@ -4,8 +4,8 @@
 // Library inclution.
 //************************************************************************************
 #include <Arduino.h>
-#include "ChaCha.h"
 #include "RH_ASK.h"
+#include "AES.h"
 //************************************************************************************
 // Message types and syntax.
 //************************************************************************************
@@ -38,7 +38,7 @@ const static char actionArray[ATarraySize] = {aUp, aDown, aToggle};
 //************************************************************************************
 // Definitions and pinout for interrupt and buttons.
 //************************************************************************************
-#define messageLength 10 // Length of message.
+#define messageLength 16 // Length of message.
 #define numUint64ToByte 8 // Number of bytes per uint64_t value.
 #define pulseDuration 100 // Number of milliseconds to hold pin high.
 #define typeNum 3 // Number of types.
@@ -60,32 +60,16 @@ const static uint8_t functionPins[typeNum][actionNum] = {
 //************************************************************************************
 // Enctyption defintions.
 //************************************************************************************
-ChaCha chacha;
-struct encryption {
-    byte key[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-    uint8_t rounds = 8;
-    byte iv[8] = {101,102,103,104,105,106,107,108};
-    byte counter[8] = {109, 110, 111, 112, 113, 114, 115, 116};
-} const static cipher;
-
-
-//byte key[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-//                0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}; // 16 byte key
-//AES128 aes;
-
-//************************************************************************************
-// Process time analyser - Debug.
-//************************************************************************************
-#define enableAnalyser true // Debug.
-#define analysePin 13 // Debug.
-
+byte key[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}; // 16 byte key
+AES128 aes;
 //************************************************************************************
 // Radio defintions.
 //************************************************************************************
-#define recievePin 13 // Radio recieve pin.
+#define recievePin 12 // Radio recieve pin.
 uint64_t prevMessageTime = 0; // Time of last data.
 #define timeResetThreshold 0xFA // High byte time threshold for timer reset. 
-RH_ASK driver(2000, recievePin, 11, 12); // Speed, recieve pin, transmit pin, push to talk pin.
+RH_ASK driver(2000, recievePin, 11, 13); // Speed, recieve pin, transmit pin, push to talk pin.
 //************************************************************************************
 // Functions.
 //************************************************************************************
@@ -103,22 +87,14 @@ void getMessage() { // Check if a message has been recieved.
     uint8_t buf[RH_ASK_MAX_MESSAGE_LEN];
     uint8_t buflen;
     if (driver.recv(buf, &buflen)) { // Message with a good checksum received.
-        driver.printBuffer("Got:", buf, buflen); // Debug.
+        //driver.printBuffer("Got:", buf, buflen); // Debug.
         if (buflen == messageLength) { // Message of 10 bytes recieved as expected.
-            uint8_t message[messageLength]; // Encrypted message array.
+            byte message[messageLength]; // Encrypted message array.
             for (uint8_t i = 0; i < messageLength; i++) { // Save message to ciphertext array.
-                message[i] = buf[i];
+                message[i] = (byte) buf[i];
             }
-            chacha.decrypt(message, message, messageLength); // Decrypt message.
-            chacha.setCounter(cipher.counter, sizeof(cipher.counter)); // Set counter.
-            Serial.print("Decrypted message is: ");
-            for (uint8_t i = 0; i < messageLength; i++) { // Print message.
-                Serial.print(message[i], DEC);
-                Serial.print(" ");
-            }
-            Serial.println("");
+            aes.decryptBlock(&message[0], &message[0]); // Decrypt message.
             handleMessage(&message[0]);
-            Serial.println("Done processing message");
         }
     }
 }
@@ -126,17 +102,11 @@ void getMessage() { // Check if a message has been recieved.
 void handleMessage(char *address) {
     uint8_t type = getMessageCommand(address, &typeArray[0]);
     uint8_t action = getMessageCommand(address + 1, &actionArray[0]);
-    if (type != 3 && action != 3) {
-        Serial.println("Valid message."); // Debug.
-        if (confirmTime(address + 2)) {
-            Serial.println("Valid time."); // Debug.
+    if (type != 3 && action != 3) { // Check if valid command.
+        if (confirmTime(address + 2)) { // Check if valid time.
             pulsePin(functionPins[type][action]); // Pulse the pin.
-        } else { // Debug.
-            Serial.println("Invalid time."); // Debug.
-        } // Debug.
-    } else { // Debug.
-        Serial.println("Invalid command."); // Debug.
-    } // Debug.
+        }
+    }
 }
 // Get message type or action, depended on passed array.
 uint8_t getMessageCommand(char *address, char *array) {
@@ -166,8 +136,6 @@ bool confirmTime(char *address) {
 }
 // Puls the given pin to set relay on then off.
 void pulsePin(uint8_t pin) {
-    Serial.print("Setting pin: ");
-    Serial.println(pin);
     digitalWrite(pin, HIGH);
     delay(pulseDuration);
     digitalWrite(pin, LOW);
@@ -176,14 +144,8 @@ void pulsePin(uint8_t pin) {
 //************************************************************************************
 void setup() {
     setOutput(); // Set function pins to output pins.
-    Serial.begin(115200);  // Debug.
     driver.init(); // Start radio driver.
-    //driver.setModeRx(); // Set driver to recieve. Not really nessesary.
-    //aes.setKey(key, aes.keySize()); // Set encryption key.
-    chacha.setNumRounds(cipher.rounds); // Set number of rounds.
-    chacha.setKey(cipher.key, sizeof(cipher.key)); // Set key.
-    chacha.setIV(cipher.iv, sizeof(cipher.iv)); // Set initialization vector.
-    chacha.setCounter(cipher.counter, sizeof(cipher.counter)); // Set number of rounds.
+    aes.setKey(&key[0], sizeof(key)); // Set encryption key.
 }
 // Main loop.
 //************************************************************************************
